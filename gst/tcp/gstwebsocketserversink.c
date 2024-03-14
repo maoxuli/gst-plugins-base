@@ -1,8 +1,5 @@
-/* GStreamer
- * Copyright (C) <1999> Erik Walthinsen <omega@cse.ogi.edu>
- * Copyright (C) <2004> Thomas Vander Stichele <thomas at apestaart dot org>
- * Copyright (C) <2011> Collabora Ltd.
- *     Author: Sebastian Dröge <sebastian.droege@collabora.co.uk>
+/* 
+ * Copyright (C) <2024> Maoxu Li <li@maoxuli.com>
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -21,21 +18,9 @@
  */
 
 /**
- * SECTION:element-tcpclientsink
- * @title: tcpclientsink
- * @see_also: #tcpclientsink
- *
- * ## Example launch line (server):
- * |[
- * nc -l -p 3000
- * ]|
- * ## Example launch line (client):
- * |[
- * gst-launch-1.0 fdsink fd=1 ! tcpclientsink port=3000
- * ]|
- *  everything you type in the client is shown on the server (fd=1 means
- * standard input which is the command line input file descriptor)
- *
+ * SECTION:element-websocketserversink
+ * @title: websocketserversink
+ * @see_also: #httpserversink
  */
 
 #ifdef HAVE_CONFIG_H
@@ -44,9 +29,9 @@
 #include <gst/gst-i18n-plugin.h>
 
 #include "gsttcpelements.h"
-#include "gsttcpclientsink.h"
+#include "gstwebsocketserversink.h"
 
-/* TCPClientSink signals and args */
+/* websocketserverSink signals and args */
 enum
 {
   FRAME_ENCODED,
@@ -54,8 +39,8 @@ enum
   LAST_SIGNAL
 };
 
-GST_DEBUG_CATEGORY_STATIC (tcpclientsink_debug);
-#define GST_CAT_DEFAULT (tcpclientsink_debug)
+GST_DEBUG_CATEGORY_STATIC (websocketserversink_debug);
+#define GST_CAT_DEFAULT (websocketserversink_debug)
 
 enum
 {
@@ -69,32 +54,34 @@ static GstStaticPadTemplate sinktemplate = GST_STATIC_PAD_TEMPLATE ("sink",
     GST_PAD_ALWAYS,
     GST_STATIC_CAPS_ANY);
 
-static void gst_tcp_client_sink_finalize (GObject * gobject);
+static void gst_websocket_server_sink_finalize (GObject * gobject);
 
-static gboolean gst_tcp_client_sink_setcaps (GstBaseSink * bsink,
+static gboolean gst_websocket_server_sink_setcaps (GstBaseSink * bsink,
     GstCaps * caps);
-static GstFlowReturn gst_tcp_client_sink_render (GstBaseSink * bsink,
+static GstFlowReturn gst_websocket_server_sink_render (GstBaseSink * bsink,
     GstBuffer * buf);
-static gboolean gst_tcp_client_sink_start (GstBaseSink * bsink);
-static gboolean gst_tcp_client_sink_stop (GstBaseSink * bsink);
-static gboolean gst_tcp_client_sink_unlock (GstBaseSink * bsink);
-static gboolean gst_tcp_client_sink_unlock_stop (GstBaseSink * bsink);
+static gboolean gst_websocket_server_sink_start (GstBaseSink * bsink);
+static gboolean gst_websocket_server_sink_stop (GstBaseSink * bsink);
+static gboolean gst_websocket_server_sink_unlock (GstBaseSink * bsink);
+static gboolean gst_websocket_server_sink_unlock_stop (GstBaseSink * bsink);
 
-static void gst_tcp_client_sink_set_property (GObject * object, guint prop_id,
-    const GValue * value, GParamSpec * pspec);
-static void gst_tcp_client_sink_get_property (GObject * object, guint prop_id,
-    GValue * value, GParamSpec * pspec);
+static void gst_websocket_server_sink_set_property (GObject * object,
+    guint prop_id, const GValue * value, GParamSpec * pspec);
+static void gst_websocket_server_sink_get_property (GObject * object,
+    guint prop_id, GValue * value, GParamSpec * pspec);
 
 
-/*static guint gst_tcp_client_sink_signals[LAST_SIGNAL] = { 0 }; */
+/*static guint gst_websocket_server_sink_signals[LAST_SIGNAL] = { 0 }; */
 
-#define gst_tcp_client_sink_parent_class parent_class
-G_DEFINE_TYPE (GstTCPClientSink, gst_tcp_client_sink, GST_TYPE_BASE_SINK);
-GST_ELEMENT_REGISTER_DEFINE_WITH_CODE (tcpclientsink, "tcpclientsink",
-    GST_RANK_NONE, GST_TYPE_TCP_CLIENT_SINK, tcp_element_init (plugin));
+#define gst_websocket_server_sink_parent_class parent_class
+G_DEFINE_TYPE (GstWebsocketServerSink, gst_websocket_server_sink,
+    GST_TYPE_BASE_SINK);
+GST_ELEMENT_REGISTER_DEFINE_WITH_CODE (websocketserversink,
+    "websocketserversink", GST_RANK_NONE, GST_TYPE_WEBSOCKET_SERVER_SINK,
+    tcp_element_init (plugin));
 
 static void
-gst_tcp_client_sink_class_init (GstTCPClientSinkClass * klass)
+gst_websocket_server_sink_class_init (GstWebsocketServerSinkClass * klass)
 {
   GObjectClass *gobject_class;
   GstElementClass *gstelement_class;
@@ -106,51 +93,52 @@ gst_tcp_client_sink_class_init (GstTCPClientSinkClass * klass)
 
   parent_class = g_type_class_peek_parent (klass);
 
-  gobject_class->set_property = gst_tcp_client_sink_set_property;
-  gobject_class->get_property = gst_tcp_client_sink_get_property;
-  gobject_class->finalize = gst_tcp_client_sink_finalize;
+  gobject_class->set_property = gst_websocket_server_sink_set_property;
+  gobject_class->get_property = gst_websocket_server_sink_get_property;
+  gobject_class->finalize = gst_websocket_server_sink_finalize;
 
   g_object_class_install_property (gobject_class, PROP_HOST,
       g_param_spec_string ("host", "Host", "The host/IP to send the packets to",
-          TCP_DEFAULT_HOST, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+          WEBSOCKET_DEFAULT_HOST, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
   g_object_class_install_property (gobject_class, PROP_PORT,
       g_param_spec_int ("port", "Port", "The port to send the packets to",
-          0, TCP_HIGHEST_PORT, TCP_DEFAULT_PORT,
+          0, WEBSOCKET_HIGHEST_PORT, WEBSOCKET_DEFAULT_PORT,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   gst_element_class_add_static_pad_template (gstelement_class, &sinktemplate);
 
   gst_element_class_set_static_metadata (gstelement_class,
-      "TCP client sink", "Sink/Network",
-      "Send data as a client over the network via TCP",
-      "Thomas Vander Stichele <thomas at apestaart dot org>");
+      "Websocket server sink", "Sink/Network",
+      "Send data as a server over the network via websocket",
+      "Maoxu Li <li@maoxuli.com>");
 
-  gstbasesink_class->start = gst_tcp_client_sink_start;
-  gstbasesink_class->stop = gst_tcp_client_sink_stop;
-  gstbasesink_class->set_caps = gst_tcp_client_sink_setcaps;
-  gstbasesink_class->render = gst_tcp_client_sink_render;
-  gstbasesink_class->unlock = gst_tcp_client_sink_unlock;
-  gstbasesink_class->unlock_stop = gst_tcp_client_sink_unlock_stop;
+  gstbasesink_class->start = gst_websocket_server_sink_start;
+  gstbasesink_class->stop = gst_websocket_server_sink_stop;
+  gstbasesink_class->set_caps = gst_websocket_server_sink_setcaps;
+  gstbasesink_class->render = gst_websocket_server_sink_render;
+  gstbasesink_class->unlock = gst_websocket_server_sink_unlock;
+  gstbasesink_class->unlock_stop = gst_websocket_server_sink_unlock_stop;
 
-  GST_DEBUG_CATEGORY_INIT (tcpclientsink_debug, "tcpclientsink", 0, "TCP sink");
+  GST_DEBUG_CATEGORY_INIT (websocketserversink_debug, "websocketserversink", 0,
+      "websocket sink");
 }
 
 static void
-gst_tcp_client_sink_init (GstTCPClientSink * this)
+gst_websocket_server_sink_init (GstWebsocketServerSink * this)
 {
-  this->host = g_strdup (TCP_DEFAULT_HOST);
-  this->port = TCP_DEFAULT_PORT;
+  this->host = g_strdup (WEBSOCKET_DEFAULT_HOST);
+  this->port = WEBSOCKET_DEFAULT_PORT;
 
   this->socket = NULL;
   this->cancellable = g_cancellable_new ();
 
-  GST_OBJECT_FLAG_UNSET (this, GST_TCP_CLIENT_SINK_OPEN);
+  GST_OBJECT_FLAG_UNSET (this, GST_WEBSOCKET_SERVER_SINK_OPEN);
 }
 
 static void
-gst_tcp_client_sink_finalize (GObject * gobject)
+gst_websocket_server_sink_finalize (GObject * gobject)
 {
-  GstTCPClientSink *this = GST_TCP_CLIENT_SINK (gobject);
+  GstWebsocketServerSink *this = GST_WEBSOCKET_SERVER_SINK (gobject);
 
   if (this->cancellable)
     g_object_unref (this->cancellable);
@@ -167,24 +155,24 @@ gst_tcp_client_sink_finalize (GObject * gobject)
 }
 
 static gboolean
-gst_tcp_client_sink_setcaps (GstBaseSink * bsink, GstCaps * caps)
+gst_websocket_server_sink_setcaps (GstBaseSink * bsink, GstCaps * caps)
 {
   return TRUE;
 }
 
 static GstFlowReturn
-gst_tcp_client_sink_render (GstBaseSink * bsink, GstBuffer * buf)
+gst_websocket_server_sink_render (GstBaseSink * bsink, GstBuffer * buf)
 {
-  GstTCPClientSink *sink;
+  GstWebsocketServerSink *sink;
   GstMapInfo map;
   gsize written = 0;
   gssize rret;
   GError *err = NULL;
 
-  sink = GST_TCP_CLIENT_SINK (bsink);
+  sink = GST_WEBSOCKET_SERVER_SINK (bsink);
 
-  g_return_val_if_fail (GST_OBJECT_FLAG_IS_SET (sink, GST_TCP_CLIENT_SINK_OPEN),
-      GST_FLOW_FLUSHING);
+  g_return_val_if_fail (GST_OBJECT_FLAG_IS_SET (sink,
+          GST_WEBSOCKET_SERVER_SINK_OPEN), GST_FLOW_FLUSHING);
 
   gst_buffer_map (buf, &map, GST_MAP_READ);
   GST_LOG_OBJECT (sink, "writing %" G_GSIZE_FORMAT " bytes for buffer data",
@@ -227,13 +215,13 @@ write_error:
 }
 
 static void
-gst_tcp_client_sink_set_property (GObject * object, guint prop_id,
+gst_websocket_server_sink_set_property (GObject * object, guint prop_id,
     const GValue * value, GParamSpec * pspec)
 {
-  GstTCPClientSink *tcpclientsink;
+  GstWebsocketServerSink *websocketserversink;
 
-  g_return_if_fail (GST_IS_TCP_CLIENT_SINK (object));
-  tcpclientsink = GST_TCP_CLIENT_SINK (object);
+  g_return_if_fail (GST_IS_WEBSOCKET_SERVER_SINK (object));
+  websocketserversink = GST_WEBSOCKET_SERVER_SINK (object);
 
   switch (prop_id) {
     case PROP_HOST:
@@ -241,11 +229,11 @@ gst_tcp_client_sink_set_property (GObject * object, guint prop_id,
         g_warning ("host property cannot be NULL");
         break;
       }
-      g_free (tcpclientsink->host);
-      tcpclientsink->host = g_value_dup_string (value);
+      g_free (websocketserversink->host);
+      websocketserversink->host = g_value_dup_string (value);
       break;
     case PROP_PORT:
-      tcpclientsink->port = g_value_get_int (value);
+      websocketserversink->port = g_value_get_int (value);
       break;
 
     default:
@@ -255,20 +243,20 @@ gst_tcp_client_sink_set_property (GObject * object, guint prop_id,
 }
 
 static void
-gst_tcp_client_sink_get_property (GObject * object, guint prop_id,
+gst_websocket_server_sink_get_property (GObject * object, guint prop_id,
     GValue * value, GParamSpec * pspec)
 {
-  GstTCPClientSink *tcpclientsink;
+  GstWebsocketServerSink *websocketserversink;
 
-  g_return_if_fail (GST_IS_TCP_CLIENT_SINK (object));
-  tcpclientsink = GST_TCP_CLIENT_SINK (object);
+  g_return_if_fail (GST_IS_WEBSOCKET_SERVER_SINK (object));
+  websocketserversink = GST_WEBSOCKET_SERVER_SINK (object);
 
   switch (prop_id) {
     case PROP_HOST:
-      g_value_set_string (value, tcpclientsink->host);
+      g_value_set_string (value, websocketserversink->host);
       break;
     case PROP_PORT:
-      g_value_set_int (value, tcpclientsink->port);
+      g_value_set_int (value, websocketserversink->port);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -279,15 +267,15 @@ gst_tcp_client_sink_get_property (GObject * object, guint prop_id,
 
 /* create a socket for sending to remote machine */
 static gboolean
-gst_tcp_client_sink_start (GstBaseSink * bsink)
+gst_websocket_server_sink_start (GstBaseSink * bsink)
 {
-  GstTCPClientSink *this = GST_TCP_CLIENT_SINK (bsink);
+  GstWebsocketServerSink *this = GST_WEBSOCKET_SERVER_SINK (bsink);
   GError *err = NULL;
   GList *addrs;
   GList *cur_addr;
   GSocketAddress *saddr = NULL;
 
-  if (GST_OBJECT_FLAG_IS_SET (this, GST_TCP_CLIENT_SINK_OPEN))
+  if (GST_OBJECT_FLAG_IS_SET (this, GST_WEBSOCKET_SERVER_SINK_OPEN))
     return TRUE;
 
   addrs =
@@ -332,7 +320,7 @@ gst_tcp_client_sink_start (GstBaseSink * bsink)
   g_list_free_full (g_steal_pointer (&addrs), g_object_unref);
   g_object_unref (saddr);
 
-  GST_OBJECT_FLAG_SET (this, GST_TCP_CLIENT_SINK_OPEN);
+  GST_OBJECT_FLAG_SET (this, GST_WEBSOCKET_SERVER_SINK_OPEN);
 
   this->data_written = 0;
 
@@ -369,19 +357,19 @@ connect_failed:
     }
     g_clear_error (&err);
     /* pretend we opened ok for proper cleanup to happen */
-    GST_OBJECT_FLAG_SET (this, GST_TCP_CLIENT_SINK_OPEN);
-    gst_tcp_client_sink_stop (GST_BASE_SINK (this));
+    GST_OBJECT_FLAG_SET (this, GST_WEBSOCKET_SERVER_SINK_OPEN);
+    gst_websocket_server_sink_stop (GST_BASE_SINK (this));
     return FALSE;
   }
 }
 
 static gboolean
-gst_tcp_client_sink_stop (GstBaseSink * bsink)
+gst_websocket_server_sink_stop (GstBaseSink * bsink)
 {
-  GstTCPClientSink *this = GST_TCP_CLIENT_SINK (bsink);
+  GstWebsocketServerSink *this = GST_WEBSOCKET_SERVER_SINK (bsink);
   GError *err = NULL;
 
-  if (!GST_OBJECT_FLAG_IS_SET (this, GST_TCP_CLIENT_SINK_OPEN))
+  if (!GST_OBJECT_FLAG_IS_SET (this, GST_WEBSOCKET_SERVER_SINK_OPEN))
     return TRUE;
 
   if (this->socket) {
@@ -395,16 +383,16 @@ gst_tcp_client_sink_stop (GstBaseSink * bsink)
     this->socket = NULL;
   }
 
-  GST_OBJECT_FLAG_UNSET (this, GST_TCP_CLIENT_SINK_OPEN);
+  GST_OBJECT_FLAG_UNSET (this, GST_WEBSOCKET_SERVER_SINK_OPEN);
 
   return TRUE;
 }
 
 /* will be called only between calls to start() and stop() */
 static gboolean
-gst_tcp_client_sink_unlock (GstBaseSink * bsink)
+gst_websocket_server_sink_unlock (GstBaseSink * bsink)
 {
-  GstTCPClientSink *sink = GST_TCP_CLIENT_SINK (bsink);
+  GstWebsocketServerSink *sink = GST_WEBSOCKET_SERVER_SINK (bsink);
 
   GST_DEBUG_OBJECT (sink, "set to flushing");
   g_cancellable_cancel (sink->cancellable);
@@ -414,9 +402,9 @@ gst_tcp_client_sink_unlock (GstBaseSink * bsink)
 
 /* will be called only between calls to start() and stop() */
 static gboolean
-gst_tcp_client_sink_unlock_stop (GstBaseSink * bsink)
+gst_websocket_server_sink_unlock_stop (GstBaseSink * bsink)
 {
-  GstTCPClientSink *sink = GST_TCP_CLIENT_SINK (bsink);
+  GstWebsocketServerSink *sink = GST_WEBSOCKET_SERVER_SINK (bsink);
 
   GST_DEBUG_OBJECT (sink, "unset flushing");
   g_object_unref (sink->cancellable);
