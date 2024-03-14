@@ -9,6 +9,7 @@ tcp_sources = [
   'gsttcpserversink.c',
   'gsttcpsrcstats.c',
   'gsttcpplugin.c',
+  'gstwebsocketserversink.c',
 ]
 
 if core_conf.has('HAVE_SYS_SOCKET_H')

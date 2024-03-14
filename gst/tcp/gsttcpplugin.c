@@ -39,6 +39,7 @@ plugin_init (GstPlugin * plugin)
 
 #endif
   ret |= GST_ELEMENT_REGISTER (multisocketsink, plugin);
+  ret |= GST_ELEMENT_REGISTER (websocketserversink, plugin);
 
   return ret;
 }
