@@ -26,11 +26,15 @@
 #include <gst/base/gstbasesink.h>
 
 #include <gio/gio.h>
+#include <libsoup/soup.h>
+#include <libsoup/soup-websocket-connection.h>
+
+#define DEFAULT_HTML_ROOT "/var/www/html"
 
 G_BEGIN_DECLS
 
 #define GST_TYPE_WEBSOCKET_SERVER_SINK \
-  (gst_WEBSOCKET_SERVER_sink_get_type())
+  (gst_websocket_server_sink_get_type())
 #define GST_WEBSOCKET_SERVER_SINK(obj) \
   (G_TYPE_CHECK_INSTANCE_CAST((obj),GST_TYPE_WEBSOCKET_SERVER_SINK,GstWebsocketServerSink))
 #define GST_WEBSOCKET_SERVER_SINK_CLASS(klass) \
@@ -44,30 +48,28 @@ typedef struct _GstWebsocketServerSink GstWebsocketServerSink;
 typedef struct _GstWebsocketServerSinkClass GstWebsocketServerSinkClass;
 
 typedef enum {
-  GST_WEBSOCKET_SERVER_SINK_OPEN             = (GST_ELEMENT_FLAG_LAST << 0),
-
-  GST_WEBSOCKET_SERVER_SINK_FLAG_LAST        = (GST_ELEMENT_FLAG_LAST << 2),
+  GST_WEBSOCKET_SERVER_SINK_CONNECTED = (GST_ELEMENT_FLAG_LAST << 0),
+  GST_WEBSOCKET_SERVER_SINK_FLAG_LAST = (GST_ELEMENT_FLAG_LAST << 2),
 } GstWebsocketServerSinkFlags;
 
 struct _GstWebsocketServerSink {
   GstBaseSink element;
 
   /* server information */
-  int port;
   gchar *host;
+  int port;
+  gchar *html_root; 
 
-  /* socket */
-  GSocket *socket;
-  GCancellable *cancellable;
-
-  size_t data_written; /* how much bytes have we written ? */
+  /* websocket server */
+  SoupServer *server;
+  SoupWebsocketConnection *connection; 
 };
 
 struct _GstWebsocketServerSinkClass {
   GstBaseSinkClass parent_class;
 };
 
-GType gst_WEBSOCKET_SERVER_sink_get_type(void);
+GType gst_websocket_server_sink_get_type(void);
 
 G_END_DECLS
 

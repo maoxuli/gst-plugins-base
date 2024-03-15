@@ -38,6 +38,7 @@ GST_ELEMENT_REGISTER_DECLARE (tcpserversink);
 GST_ELEMENT_REGISTER_DECLARE (tcpserversrc);
 GST_ELEMENT_REGISTER_DECLARE (multifdsink);
 GST_ELEMENT_REGISTER_DECLARE (multisocketsink);
+GST_ELEMENT_REGISTER_DECLARE (websocketserversink);
 
 G_GNUC_INTERNAL GList *    tcp_get_addresses (GstElement * obj, const char *host,
                                               GCancellable * cancellable, GError ** err);

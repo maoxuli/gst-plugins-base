@@ -16,11 +16,13 @@ if core_conf.has('HAVE_SYS_SOCKET_H')
    tcp_sources += 'gstmultifdsink.c'
 endif
 
+soup_dep = dependency('libsoup-3.0', version : '>= 3.0')
+
 gsttcp = library('gsttcp',
   tcp_sources,
   c_args : gst_plugins_base_args,
   include_directories: [configinc, libsinc],
-  dependencies : [gio_dep, gst_base_dep, gst_net_dep],
+  dependencies : [gio_dep, gst_base_dep, gst_net_dep, soup_dep],
   install : true,
   install_dir : plugins_install_dir,
 )

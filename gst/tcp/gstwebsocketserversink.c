@@ -31,11 +31,13 @@
 #include "gsttcpelements.h"
 #include "gstwebsocketserversink.h"
 
+#include <glib/gstdio.h>
+
 /* websocketserverSink signals and args */
 enum
 {
-  FRAME_ENCODED,
-  /* FILL ME */
+  CONNECTED,
+  DISCONNECTED,
   LAST_SIGNAL
 };
 
@@ -46,7 +48,8 @@ enum
 {
   PROP_0,
   PROP_HOST,
-  PROP_PORT
+  PROP_PORT,
+  PROP_HTML_ROOT
 };
 
 static GstStaticPadTemplate sinktemplate = GST_STATIC_PAD_TEMPLATE ("sink",
@@ -54,22 +57,16 @@ static GstStaticPadTemplate sinktemplate = GST_STATIC_PAD_TEMPLATE ("sink",
     GST_PAD_ALWAYS,
     GST_STATIC_CAPS_ANY);
 
-static void gst_websocket_server_sink_finalize (GObject * gobject);
-
-static gboolean gst_websocket_server_sink_setcaps (GstBaseSink * bsink,
-    GstCaps * caps);
-static GstFlowReturn gst_websocket_server_sink_render (GstBaseSink * bsink,
-    GstBuffer * buf);
-static gboolean gst_websocket_server_sink_start (GstBaseSink * bsink);
-static gboolean gst_websocket_server_sink_stop (GstBaseSink * bsink);
-static gboolean gst_websocket_server_sink_unlock (GstBaseSink * bsink);
-static gboolean gst_websocket_server_sink_unlock_stop (GstBaseSink * bsink);
-
+static void gst_websocket_server_sink_finalize (GObject * object);
 static void gst_websocket_server_sink_set_property (GObject * object,
     guint prop_id, const GValue * value, GParamSpec * pspec);
 static void gst_websocket_server_sink_get_property (GObject * object,
     guint prop_id, GValue * value, GParamSpec * pspec);
 
+static gboolean gst_websocket_server_sink_start (GstBaseSink * bsink);
+static gboolean gst_websocket_server_sink_stop (GstBaseSink * bsink);
+static GstFlowReturn gst_websocket_server_sink_render (GstBaseSink * bsink,
+    GstBuffer * buf);
 
 /*static guint gst_websocket_server_sink_signals[LAST_SIGNAL] = { 0 }; */
 
@@ -93,16 +90,20 @@ gst_websocket_server_sink_class_init (GstWebsocketServerSinkClass * klass)
 
   parent_class = g_type_class_peek_parent (klass);
 
+  gobject_class->finalize = gst_websocket_server_sink_finalize;
   gobject_class->set_property = gst_websocket_server_sink_set_property;
   gobject_class->get_property = gst_websocket_server_sink_get_property;
-  gobject_class->finalize = gst_websocket_server_sink_finalize;
 
   g_object_class_install_property (gobject_class, PROP_HOST,
       g_param_spec_string ("host", "Host", "The host/IP to send the packets to",
-          WEBSOCKET_DEFAULT_HOST, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+          TCP_DEFAULT_HOST, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
   g_object_class_install_property (gobject_class, PROP_PORT,
       g_param_spec_int ("port", "Port", "The port to send the packets to",
-          0, WEBSOCKET_HIGHEST_PORT, WEBSOCKET_DEFAULT_PORT,
+          0, TCP_HIGHEST_PORT, TCP_DEFAULT_PORT,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+  g_object_class_install_property (gobject_class, PROP_HTML_ROOT,
+      g_param_spec_string ("html_root", "HTML Root",
+          "The root directory for html files", DEFAULT_HTML_ROOT,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   gst_element_class_add_static_pad_template (gstelement_class, &sinktemplate);
@@ -114,10 +115,7 @@ gst_websocket_server_sink_class_init (GstWebsocketServerSinkClass * klass)
 
   gstbasesink_class->start = gst_websocket_server_sink_start;
   gstbasesink_class->stop = gst_websocket_server_sink_stop;
-  gstbasesink_class->set_caps = gst_websocket_server_sink_setcaps;
   gstbasesink_class->render = gst_websocket_server_sink_render;
-  gstbasesink_class->unlock = gst_websocket_server_sink_unlock;
-  gstbasesink_class->unlock_stop = gst_websocket_server_sink_unlock_stop;
 
   GST_DEBUG_CATEGORY_INIT (websocketserversink_debug, "websocketserversink", 0,
       "websocket sink");
@@ -126,102 +124,34 @@ gst_websocket_server_sink_class_init (GstWebsocketServerSinkClass * klass)
 static void
 gst_websocket_server_sink_init (GstWebsocketServerSink * this)
 {
-  this->host = g_strdup (WEBSOCKET_DEFAULT_HOST);
-  this->port = WEBSOCKET_DEFAULT_PORT;
+  this->host = g_strdup (TCP_DEFAULT_HOST);
+  this->port = TCP_DEFAULT_PORT;
+  this->html_root = g_strdup (DEFAULT_HTML_ROOT);
 
-  this->socket = NULL;
-  this->cancellable = g_cancellable_new ();
+  this->server = NULL;
+  this->connection = NULL;
 
-  GST_OBJECT_FLAG_UNSET (this, GST_WEBSOCKET_SERVER_SINK_OPEN);
+  GST_OBJECT_FLAG_UNSET (this, GST_WEBSOCKET_SERVER_SINK_CONNECTED);
 }
 
 static void
-gst_websocket_server_sink_finalize (GObject * gobject)
+gst_websocket_server_sink_finalize (GObject * object)
 {
-  GstWebsocketServerSink *this = GST_WEBSOCKET_SERVER_SINK (gobject);
-
-  if (this->cancellable)
-    g_object_unref (this->cancellable);
-  this->cancellable = NULL;
-
-  if (this->socket)
-    g_object_unref (this->socket);
-  this->socket = NULL;
+  GstWebsocketServerSink *this = GST_WEBSOCKET_SERVER_SINK (object);
+  g_return_if_fail (GST_IS_WEBSOCKET_SERVER_SINK (object));
 
   g_free (this->host);
-  this->host = NULL;
+  g_free (this->html_root);
 
-  G_OBJECT_CLASS (parent_class)->finalize (gobject);
-}
-
-static gboolean
-gst_websocket_server_sink_setcaps (GstBaseSink * bsink, GstCaps * caps)
-{
-  return TRUE;
-}
-
-static GstFlowReturn
-gst_websocket_server_sink_render (GstBaseSink * bsink, GstBuffer * buf)
-{
-  GstWebsocketServerSink *sink;
-  GstMapInfo map;
-  gsize written = 0;
-  gssize rret;
-  GError *err = NULL;
-
-  sink = GST_WEBSOCKET_SERVER_SINK (bsink);
-
-  g_return_val_if_fail (GST_OBJECT_FLAG_IS_SET (sink,
-          GST_WEBSOCKET_SERVER_SINK_OPEN), GST_FLOW_FLUSHING);
-
-  gst_buffer_map (buf, &map, GST_MAP_READ);
-  GST_LOG_OBJECT (sink, "writing %" G_GSIZE_FORMAT " bytes for buffer data",
-      map.size);
-
-  /* write buffer data */
-  while (written < map.size) {
-    rret =
-        g_socket_send (sink->socket, (gchar *) map.data + written,
-        map.size - written, sink->cancellable, &err);
-    if (rret < 0)
-      goto write_error;
-    written += rret;
-  }
-  gst_buffer_unmap (buf, &map);
-
-  sink->data_written += written;
-
-  return GST_FLOW_OK;
-
-  /* ERRORS */
-write_error:
-  {
-    GstFlowReturn ret;
-
-    if (g_error_matches (err, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
-      ret = GST_FLOW_FLUSHING;
-      GST_DEBUG_OBJECT (sink, "Cancelled reading from socket");
-    } else {
-      GST_ELEMENT_ERROR (sink, RESOURCE, WRITE,
-          (_("Error while sending data to \"%s:%d\"."), sink->host, sink->port),
-          ("Only %" G_GSIZE_FORMAT " of %" G_GSIZE_FORMAT " bytes written: %s",
-              written, map.size, err->message));
-      ret = GST_FLOW_ERROR;
-    }
-    gst_buffer_unmap (buf, &map);
-    g_clear_error (&err);
-    return ret;
-  }
+  G_OBJECT_CLASS (parent_class)->finalize (object);
 }
 
 static void
 gst_websocket_server_sink_set_property (GObject * object, guint prop_id,
     const GValue * value, GParamSpec * pspec)
 {
-  GstWebsocketServerSink *websocketserversink;
-
+  GstWebsocketServerSink *this = GST_WEBSOCKET_SERVER_SINK (object);
   g_return_if_fail (GST_IS_WEBSOCKET_SERVER_SINK (object));
-  websocketserversink = GST_WEBSOCKET_SERVER_SINK (object);
 
   switch (prop_id) {
     case PROP_HOST:
@@ -229,13 +159,20 @@ gst_websocket_server_sink_set_property (GObject * object, guint prop_id,
         g_warning ("host property cannot be NULL");
         break;
       }
-      g_free (websocketserversink->host);
-      websocketserversink->host = g_value_dup_string (value);
+      g_free (this->host);
+      this->host = g_value_dup_string (value);
       break;
     case PROP_PORT:
-      websocketserversink->port = g_value_get_int (value);
+      this->port = g_value_get_int (value);
       break;
-
+    case PROP_HTML_ROOT:
+      if (!g_value_get_string (value)) {
+        g_warning ("HTML root cannot be NULL");
+        break;
+      }
+      g_free (this->html_root);
+      this->html_root = g_value_dup_string (value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -246,17 +183,18 @@ static void
 gst_websocket_server_sink_get_property (GObject * object, guint prop_id,
     GValue * value, GParamSpec * pspec)
 {
-  GstWebsocketServerSink *websocketserversink;
-
+  GstWebsocketServerSink *this = GST_WEBSOCKET_SERVER_SINK (object);
   g_return_if_fail (GST_IS_WEBSOCKET_SERVER_SINK (object));
-  websocketserversink = GST_WEBSOCKET_SERVER_SINK (object);
 
   switch (prop_id) {
     case PROP_HOST:
-      g_value_set_string (value, websocketserversink->host);
+      g_value_set_string (value, this->host);
       break;
     case PROP_PORT:
-      g_value_set_int (value, websocketserversink->port);
+      g_value_set_int (value, this->port);
+      break;
+    case PROP_HTML_ROOT:
+      g_value_set_string (value, this->html_root);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -264,101 +202,172 @@ gst_websocket_server_sink_get_property (GObject * object, guint prop_id,
   }
 }
 
+static void
+http_message (SoupServer * server, SoupServerMessage * msg, const char *path,
+    GHashTable * query, gpointer user_data)
+{
+  GstWebsocketServerSink *this = (GstWebsocketServerSink *) user_data;
+  GST_DEBUG_OBJECT (this, "received http message for path: %s", path);
 
-/* create a socket for sending to remote machine */
+  GST_DEBUG_OBJECT (this, "method: %s", soup_server_message_get_method (msg));
+  if (soup_server_message_get_method (msg) == SOUP_METHOD_GET
+      || soup_server_message_get_method (msg) == SOUP_METHOD_HEAD) {
+    GStatBuf st;
+    char *file_path = g_strdup_printf ("%s%s", this->html_root, path);
+    GST_DEBUG_OBJECT (this, "file path: %s", file_path);
+    if (g_stat (file_path, &st) == -1) {
+      if (errno == EPERM) {
+        GST_DEBUG_OBJECT (this, "file is forbidden");
+        soup_server_message_set_status (msg, SOUP_STATUS_FORBIDDEN, NULL);
+      } else if (errno == ENOENT) {
+        GST_DEBUG_OBJECT (this, "file is not found");
+        soup_server_message_set_status (msg, SOUP_STATUS_NOT_FOUND, NULL);
+      } else {
+        GST_DEBUG_OBJECT (this, "error to have file stat");
+        soup_server_message_set_status (msg, SOUP_STATUS_INTERNAL_SERVER_ERROR,
+            NULL);
+      }
+    } else if (!g_file_test (file_path, G_FILE_TEST_IS_REGULAR)) {
+      GST_DEBUG_OBJECT (this, "path is not for a regular file");
+      soup_server_message_set_status (msg, SOUP_STATUS_FORBIDDEN, NULL);
+    } else if (soup_server_message_get_method (msg) == SOUP_METHOD_GET) {
+      GBytes *buffer = NULL;
+      GMappedFile *mapping = g_mapped_file_new (file_path, FALSE, NULL);
+      if (!mapping) {
+        GST_DEBUG_OBJECT (this, "failed mapping file for contents");
+        soup_server_message_set_status (msg, SOUP_STATUS_INTERNAL_SERVER_ERROR,
+            NULL);
+      } else {
+        buffer =
+            g_bytes_new_with_free_func (g_mapped_file_get_contents (mapping),
+            g_mapped_file_get_length (mapping),
+            (GDestroyNotify) g_mapped_file_unref, mapping);
+        GST_DEBUG_OBJECT (this, "response with file contents: %lu",
+            g_bytes_get_size (buffer));
+        soup_message_body_append_bytes (soup_server_message_get_response_body
+            (msg), buffer);
+        g_bytes_unref (buffer);
+        soup_server_message_set_status (msg, SOUP_STATUS_OK, NULL);
+      }
+    } else if (soup_server_message_get_method (msg) == SOUP_METHOD_HEAD) {
+      char *length = g_strdup_printf ("%lu", (gulong) st.st_size);
+      GST_DEBUG_OBJECT (this, "response with content length: %s", length);
+      soup_message_headers_append (soup_server_message_get_response_headers
+          (msg), "Content-Length", length);
+      g_free (length);
+      soup_server_message_set_status (msg, SOUP_STATUS_OK, NULL);
+    }
+  }
+}
+
+// static void
+// websocket_disconnected (SoupWebsocketConnection * connection, gpointer user_data)
+// {
+//   GstWebsocketServerSink *this;
+//   this = (GstWebsocketServerSink*) user_data;
+//   GST_DEBUG_OBJECT (this, "websocket disconnected");
+
+//   if (this->connection == connection) {
+//     GST_DEBUG_OBJECT (this, "remove websocket connection");
+//     g_object_unref (this->connection);
+//     this->connection = NULL;
+//     GST_OBJECT_FLAG_UNSET (this, GST_WEBSOCKET_SERVER_SINK_CONNECTED);
+//   }
+// }
+
+static void
+websocket_connected (SoupServer * server, SoupServerMessage * msg,
+    const char *path, SoupWebsocketConnection * connection, gpointer user_data)
+{
+  GstWebsocketServerSink *this = (GstWebsocketServerSink *) user_data;
+  GST_DEBUG_OBJECT (this, "websocket connected");
+
+  if (this->connection) {
+    GST_DEBUG_OBJECT (this, "disconnect websocket connection");
+    soup_websocket_connection_close (this->connection, 0, 0);
+    g_object_unref (this->connection);
+    this->connection = NULL;
+    GST_OBJECT_FLAG_UNSET (this, GST_WEBSOCKET_SERVER_SINK_CONNECTED);
+  }
+
+  GST_DEBUG_OBJECT (this, "add websocket connection");
+  this->connection = g_object_ref (connection);
+  // g_signal_connect (this->connection, "disconnected", G_CALLBACK (websocket_disconnected), this);
+  GST_OBJECT_FLAG_SET (this, GST_WEBSOCKET_SERVER_SINK_CONNECTED);
+}
+
+/* create a http and websocket server */
 static gboolean
 gst_websocket_server_sink_start (GstBaseSink * bsink)
 {
+  GError *error = NULL;
+  GSocketAddress *address = NULL;
   GstWebsocketServerSink *this = GST_WEBSOCKET_SERVER_SINK (bsink);
-  GError *err = NULL;
-  GList *addrs;
-  GList *cur_addr;
-  GSocketAddress *saddr = NULL;
+  GST_INFO_OBJECT (this, "starting server on %s:%d", this->host, this->port);
 
-  if (GST_OBJECT_FLAG_IS_SET (this, GST_WEBSOCKET_SERVER_SINK_OPEN))
-    return TRUE;
-
-  addrs =
-      tcp_get_addresses (GST_ELEMENT (this), this->host, this->cancellable,
-      &err);
-  if (!addrs)
+  address = g_inet_socket_address_new_from_string (this->host, this->port);
+  if (!address)
     goto name_resolve;
 
-  GST_DEBUG_OBJECT (this, "opening sending client socket to %s:%d", this->host,
+  g_assert (!this->server);
+  this->server = soup_server_new ("server-header", "websocket-server ", NULL);
+  g_assert (this->server);
+
+  soup_server_remove_websocket_extension (this->server,
+      SOUP_TYPE_WEBSOCKET_EXTENSION_DEFLATE);
+  if (!soup_server_listen (this->server, address, 0, &error))
+    goto listen_failed;
+
+  g_object_unref (address);
+  if (error)
+    goto server_error;
+
+  soup_server_add_handler (this->server, "/", http_message, this, NULL);
+  GST_INFO_OBJECT (this, "websocket service on %s:%d/mjpeg", this->host,
       this->port);
-
-  cur_addr = addrs;
-  while (cur_addr) {
-    /* clean up from possible previous iterations */
-    g_clear_error (&err);
-    g_clear_object (&this->socket);
-
-    /* iterate over addresses until one works */
-    this->socket =
-        tcp_create_socket (GST_ELEMENT (this), &cur_addr, this->port, &saddr,
-        &err);
-    if (!this->socket)
-      goto no_socket;
-
-    GST_DEBUG_OBJECT (this, "opened sending client socket");
-
-    /* connect to server */
-    if (g_socket_connect (this->socket, saddr, this->cancellable, &err))
-      break;
-
-    /* failed to connect, release and try next address... */
-    g_clear_object (&saddr);
-    if (g_error_matches (err, G_IO_ERROR, G_IO_ERROR_CANCELLED))
-      goto connect_failed;
-  }
-
-  /* final connect attempt failed */
-  if (err)
-    goto connect_failed;
-
-  GST_DEBUG_OBJECT (this, "connected to %s:%d", this->host, this->port);
-  g_list_free_full (g_steal_pointer (&addrs), g_object_unref);
-  g_object_unref (saddr);
-
-  GST_OBJECT_FLAG_SET (this, GST_WEBSOCKET_SERVER_SINK_OPEN);
-
-  this->data_written = 0;
-
+  soup_server_add_websocket_handler (this->server, "/mjpeg", NULL, NULL,
+      websocket_connected, this, NULL);
+  GST_DEBUG_OBJECT (this, "server started");
   return TRUE;
 
 name_resolve:
   {
-    if (g_error_matches (err, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+    if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
       GST_DEBUG_OBJECT (this, "Cancelled name resolution");
     } else {
       GST_ELEMENT_ERROR (this, RESOURCE, OPEN_READ, (NULL),
-          ("Failed to resolve host '%s': %s", this->host, err->message));
+          ("Failed to resolve host '%s': %s", this->host, error->message));
     }
-    g_clear_error (&err);
+    g_clear_error (&error);
     return FALSE;
   }
-no_socket:
+listen_failed:
   {
-    g_list_free_full (g_steal_pointer (&addrs), g_object_unref);
-    GST_ELEMENT_ERROR (this, RESOURCE, OPEN_READ, (NULL),
-        ("Failed to create socket: %s", err->message));
-    g_clear_error (&err);
-    return FALSE;
-  }
-connect_failed:
-  {
-    g_list_free_full (g_steal_pointer (&addrs), g_object_unref);
-    if (g_error_matches (err, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
-      GST_DEBUG_OBJECT (this, "Cancelled connecting");
+    if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+      GST_DEBUG_OBJECT (this, "Cancelled binding");
     } else {
       GST_ELEMENT_ERROR (this, RESOURCE, OPEN_READ, (NULL),
-          ("Failed to connect to host '%s:%d': %s", this->host, this->port,
-              err->message));
+          ("Failed to bind on host '%s:%d': %s", this->host, this->port,
+              error->message));
     }
-    g_clear_error (&err);
-    /* pretend we opened ok for proper cleanup to happen */
-    GST_OBJECT_FLAG_SET (this, GST_WEBSOCKET_SERVER_SINK_OPEN);
-    gst_websocket_server_sink_stop (GST_BASE_SINK (this));
+    g_clear_error (&error);
+    g_object_unref (address);
+    soup_server_disconnect (this->server);
+    this->server = NULL;
+    return FALSE;
+  }
+server_error:
+  {
+    if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+      GST_DEBUG_OBJECT (this, "Cancelled listening");
+    } else {
+      GST_ELEMENT_ERROR (this, RESOURCE, OPEN_READ, (NULL),
+          ("Failed to listen on host '%s:%d': %s", this->host, this->port,
+              error->message));
+    }
+    g_clear_error (&error);
+    soup_server_disconnect (this->server);
+    this->server = NULL;
     return FALSE;
   }
 }
@@ -367,48 +376,38 @@ static gboolean
 gst_websocket_server_sink_stop (GstBaseSink * bsink)
 {
   GstWebsocketServerSink *this = GST_WEBSOCKET_SERVER_SINK (bsink);
-  GError *err = NULL;
+  GST_DEBUG_OBJECT (this, "stopping server");
 
-  if (!GST_OBJECT_FLAG_IS_SET (this, GST_WEBSOCKET_SERVER_SINK_OPEN))
-    return TRUE;
-
-  if (this->socket) {
-    GST_DEBUG_OBJECT (this, "closing socket");
-
-    if (!g_socket_close (this->socket, &err)) {
-      GST_ERROR_OBJECT (this, "Failed to close socket: %s", err->message);
-      g_clear_error (&err);
-    }
-    g_object_unref (this->socket);
-    this->socket = NULL;
+  if (this->connection) {
+    GST_DEBUG_OBJECT (this, "closing connection");
+    soup_websocket_connection_close (this->connection, 0, 0);
+    g_object_unref (this->connection);
+    this->connection = NULL;
+    GST_OBJECT_FLAG_UNSET (this, GST_WEBSOCKET_SERVER_SINK_CONNECTED);
   }
 
-  GST_OBJECT_FLAG_UNSET (this, GST_WEBSOCKET_SERVER_SINK_OPEN);
+  if (this->server) {
+    GST_DEBUG_OBJECT (this, "closing server");
+    soup_server_disconnect (this->server);
+    g_clear_object (&this->server);
+  }
 
+  GST_DEBUG_OBJECT (this, "server stopped");
   return TRUE;
 }
 
-/* will be called only between calls to start() and stop() */
-static gboolean
-gst_websocket_server_sink_unlock (GstBaseSink * bsink)
+static GstFlowReturn
+gst_websocket_server_sink_render (GstBaseSink * bsink, GstBuffer * buf)
 {
-  GstWebsocketServerSink *sink = GST_WEBSOCKET_SERVER_SINK (bsink);
+  GstMapInfo map;
+  GstWebsocketServerSink *this = GST_WEBSOCKET_SERVER_SINK (bsink);
 
-  GST_DEBUG_OBJECT (sink, "set to flushing");
-  g_cancellable_cancel (sink->cancellable);
-
-  return TRUE;
-}
-
-/* will be called only between calls to start() and stop() */
-static gboolean
-gst_websocket_server_sink_unlock_stop (GstBaseSink * bsink)
-{
-  GstWebsocketServerSink *sink = GST_WEBSOCKET_SERVER_SINK (bsink);
-
-  GST_DEBUG_OBJECT (sink, "unset flushing");
-  g_object_unref (sink->cancellable);
-  sink->cancellable = g_cancellable_new ();
-
-  return TRUE;
+  if (GST_OBJECT_FLAG_IS_SET (this, GST_WEBSOCKET_SERVER_SINK_CONNECTED)) {
+    gst_buffer_map (buf, &map, GST_MAP_READ);
+    // GST_LOG_OBJECT (this, "writing %" G_GSIZE_FORMAT " bytes", map.size);
+    soup_websocket_connection_send_binary (this->connection, map.data,
+        map.size);
+    gst_buffer_unmap (buf, &map);
+  }
+  return GST_FLOW_OK;
 }
